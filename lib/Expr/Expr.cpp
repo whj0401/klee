@@ -128,6 +128,7 @@ void Expr::printKind(llvm::raw_ostream &os, Kind k) {
 #define X(C) case C: os << #C; break
     X(Constant);
     X(NotOptimized);
+    X(Method);
     X(Read);
     X(Select);
     X(Concat);
@@ -358,6 +359,10 @@ void ConstantExpr::toString(std::string &Res, unsigned radix) const {
   Res = value.toString(radix, false);
 }
 
+void ConstantExpr::toStringSigned(std::string &Res, unsigned radix) const {
+  Res = value.toString(radix, true);
+}
+
 ref<ConstantExpr> ConstantExpr::Concat(const ref<ConstantExpr> &RHS) {
   Expr::Width W = getWidth() + RHS->getWidth();
   APInt Tmp(value);
@@ -484,6 +489,12 @@ ref<ConstantExpr> ConstantExpr::Sge(const ref<ConstantExpr> &RHS) {
 
 ref<Expr>  NotOptimizedExpr::create(ref<Expr> src) {
   return NotOptimizedExpr::alloc(src);
+}
+
+/***/
+
+ref<Expr>  MethodExpr::create(const char *name, std::vector<ref<Expr> > args) {
+  return MethodExpr::alloc(name, args);
 }
 
 /***/
@@ -761,6 +772,17 @@ static ref<Expr> AddExpr_create(Expr *l, Expr *r) {
     } else if (rk==Expr::Sub && isa<ConstantExpr>(r->getKid(0))) { // a + (k-b) = k+(a-b)
       return AddExpr::create(r->getKid(0),
                              SubExpr::create(l, r->getKid(1)));
+    } else if (lk==Expr::Concat && rk==Expr::Concat) {
+    	if(*l==*r){
+			return MulExpr::alloc(ConstantExpr::alloc(2,r->getWidth()),r);
+    	}
+    	return AddExpr::alloc(l,r);
+    } else if (lk==Expr::Mul && rk==Expr::Concat){
+    	if(*(l->getKid(1))==*r){
+        	const ConstantExpr *ce = dyn_cast<ConstantExpr>(l->getKid(0));
+        	return MulExpr::alloc(ConstantExpr::alloc(ce->getZExtValue(r->getWidth())+1,r->getWidth()),r);
+    	}
+    	return AddExpr::alloc(l,r);
     } else {
       return AddExpr::alloc(l, r);
     }

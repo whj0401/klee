@@ -1163,6 +1163,11 @@ int main(int argc, char **argv, char **envp) {
 
   llvm::InitializeNativeTarget();
 
+  // flush expression.txt
+  std::string s;
+  llvm::raw_ostream *fileStream = new llvm::raw_fd_ostream("expression.txt", s, llvm::sys::fs::F_None);
+  fileStream->flush();
+
   parseArguments(argc, argv);
   sys::PrintStackTraceOnErrorSignal();
 

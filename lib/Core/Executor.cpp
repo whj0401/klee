@@ -35,6 +35,7 @@
 #include "klee/util/ExprSMTLIBPrinter.h"
 #include "klee/util/ExprUtil.h"
 #include "klee/util/GetElementPtrTypeIterator.h"
+#include "klee/util/LLVMExprOstream.h"
 #include "klee/Config/Version.h"
 #include "klee/Internal/ADT/KTest.h"
 #include "klee/Internal/ADT/RNG.h"
@@ -99,6 +100,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <iosfwd>
+#include <iostream>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -113,8 +115,7 @@ using namespace llvm;
 using namespace klee;
 
 
-
-
+const char *KLEE_OUTPUT_NAME = "klee_output";
 
 namespace {
   cl::opt<bool>
@@ -124,7 +125,7 @@ namespace {
   
   cl::opt<bool>
   AllowExternalSymCalls("allow-external-sym-calls",
-                        cl::init(false),
+                        cl::init(true),
 			cl::desc("Allow calls with symbolic arguments to external functions.  This concretizes the symbolic arguments.  (default=off)"));
 
   /// The different query logging solvers that can switched on/off
@@ -1851,9 +1852,23 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
               }
             }
           }
-            
+
           i++;
         }
+      }
+      const char *funcName = f->getName().data();
+      const char *targetName = KLEE_OUTPUT_NAME;
+      if (strstr(funcName, targetName) != NULL) {
+        const ConstraintManager myConstraints = state.constraints;
+        LLVMExprOstream::saveConstraints("expression.txt", myConstraints);
+
+        // Get the name of the variable needed symbolic expression
+        std::string value =
+            specialFunctionHandler->readStringAtAddress(state, arguments[0]);
+        std::cout << value << " = " << std::flush;
+        LLVMExprOstream::printExpr(arguments[1]);
+        std::cout << "\n" << std::endl << std::flush;
+        LLVMExprOstream::saveExpr(value, "expression.txt", arguments[1]);
       }
 
       executeCall(state, ki, f, arguments);
@@ -2809,7 +2824,41 @@ void Executor::run(ExecutionState &initialState) {
     executeInstruction(state, ki);
     processTimers(&state, MaxInstructionTime);
 
-    checkMemoryUsage();
+    // checkMemoryUsage();
+    if (MaxMemory) {
+      if ((stats::instructions & 0xFFFF) == 0) {
+        // We need to avoid calling GetMallocUsage() often because it
+        // is O(elts on freelist). This is really bad since we start
+        // to pummel the freelist once we hit the memory cap.
+        unsigned mbs = util::GetTotalMallocUsage() >> 20;
+        if (mbs > MaxMemory) {
+          if (mbs > MaxMemory + 100) {
+            // just guess at how many to kill
+            unsigned numStates = states.size();
+            unsigned toKill =
+                std::max(1U, numStates - numStates * MaxMemory / mbs);
+
+            klee_warning("killing %d states (over memory cap)", toKill);
+
+            std::vector<ExecutionState *> arr(states.begin(), states.end());
+            for (unsigned i = 0, N = arr.size(); N && i < toKill; ++i, --N) {
+              unsigned idx = rand() % N;
+
+              // Make two pulls to try and not hit a state that
+              // covered new code.
+              if (arr[idx]->coveredNew)
+                idx = rand() % N;
+
+              std::swap(arr[idx], arr[N - 1]);
+              terminateStateEarly(*arr[N - 1], "Memory limit exceeded.");
+            }
+          }
+          atMemoryLimit = true;
+        } else {
+          atMemoryLimit = false;
+        }
+      }
+    }
 
     updateStates(&state);
   }
@@ -3026,10 +3075,43 @@ static std::set<std::string> okExternals(okExternalsList,
                                          okExternalsList + 
                                          (sizeof(okExternalsList)/sizeof(okExternalsList[0])));
 
+// long name should be in front of short one, like asin and sin
+const char *methods[] = { "asinh", "acosh", "atanh", "acoth", "asech",
+		"acosech", "atan", "asin", "acos", "sinh", "cosh", "coth", "tanh",
+		"sech", "cosech", "sin", "cos", "tan", "cot", "sec", "cosec", "cotan",
+		"log", "exp", "bound", "pi", "euler", "maximum", "minimum", "fabs", "abs",
+		"setRwidth", "sqrt", "pow", "limit", "lipschitz", "approx" };
+
+std::vector<const char*> methodNames(methods,methods+37);
+
 void Executor::callExternalFunction(ExecutionState &state,
                                     KInstruction *target,
                                     Function *function,
                                     std::vector< ref<Expr> > &arguments) {
+
+  // check if mathFunctionHandler wants it
+  const char *name = function->getName().data();
+  bool isNeeded = false;
+  std::vector<const char *>::iterator it;
+  for (it = methodNames.begin(); it != methodNames.end(); it++) {
+    //	  std::cout<<"name: "<<name<<std::endl<<std::flush;
+    //	  std::cout<<"it: "<<*it<<std::endl<<std::flush;
+    if (strstr(name, *it) != NULL) {
+      isNeeded = true;
+      name = *it;
+      break;
+    }
+  }
+  if (isNeeded) {
+    //	  ref<Expr> src = eval(target, 0, state).value;
+    //	  LLVMExprOstream::printExpr(src);
+    ref<Expr> result = MethodExpr::create(name, arguments);
+    bindLocal(target, state, result);
+    //	  LLVMExprOstream::printExpr(getDestCell(state, target).value);
+    //	  klee_warning("binding success");
+    return;
+  }
+
   // check if specialFunctionHandler wants it
   if (specialFunctionHandler->handle(state, function, target, arguments))
     return;

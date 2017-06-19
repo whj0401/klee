@@ -24,6 +24,7 @@
 #include <vector>
 #include <map>
 
+
 namespace llvm {
   class Type;
   class raw_ostream;
@@ -104,6 +105,7 @@ public:
   static const Width Fl80 = 80;
   
 
+
   enum Kind {
     InvalidKind = -1,
 
@@ -115,8 +117,8 @@ public:
 
     /// Prevents optimization below the given expression.  Used for
     /// testing: make equality constraints that KLEE will not use to
-    /// optimize to concretes.
     NotOptimized,
+    Method,
 
     //// Skip old varexpr, just for deserialization, purge at some point
     Read=NotOptimized+2, 
@@ -447,6 +449,55 @@ public:
   static bool classof(const NotOptimizedExpr *) { return true; }
 };
 
+class MethodExpr : public NonConstantExpr {
+public:
+  static const Kind kind = Method;
+//  static const unsigned numKids = 1;
+  const char *name;
+  std::vector<ref<Expr> > args;
+
+  static ref<Expr> alloc(const char *name, std::vector<ref<Expr> > &args) {
+    ref<Expr> r(new MethodExpr(name, args));
+    r->computeHash();
+    return r;
+  }
+
+  static ref<Expr> create(const char *name, std::vector<ref<Expr> > args);
+
+  // temp
+  Width getWidth() const {
+	  Width w = 0;
+//	  for(unsigned i=0;i<args.size();++i){
+//		  w += args[i]->getWidth();
+//	  }
+	  if (args.empty()) {
+		  w = Int32;
+//		  w = 0;
+	  }
+	  else {
+		  w = args[0]->getWidth();
+	  }
+	  return w;
+  }
+  Kind getKind() const { return Method; }
+
+  unsigned getNumKids() const { return args.size(); }
+  ref<Expr> getKid(unsigned i) const { return args[i]; }
+
+  virtual ref<Expr> rebuild(ref<Expr> kids[]) const {
+	  std::vector<ref<Expr> > v(kids,kids+args.size());
+	  return create(name, v);;
+  }
+
+private:
+  MethodExpr(const char *_name, std::vector<ref<Expr> > &_args) : name(_name), args(_args) {}
+
+public:
+  static bool classof(const Expr *E) {
+    return E->getKind() == Expr::Method;
+  }
+  static bool classof(const MethodExpr *) { return true; }
+};
 
 /// Class representing a byte update of an array.
 class UpdateNode {
@@ -1003,8 +1054,14 @@ public:
 
 private:
   llvm::APInt value;
+  bool isFloatType;
+  bool isDoubleType;
 
-  ConstantExpr(const llvm::APInt &v) : value(v) {}
+  ConstantExpr(const llvm::APInt &v) : value(v), isFloatType(false), isDoubleType(false) {}
+
+	ConstantExpr(const llvm::APInt &v, bool isFloat, bool isDouble) :
+			value(v), isFloatType(isFloat), isDoubleType(isDouble) {
+	}
 
 public:
   ~ConstantExpr() {}
@@ -1035,16 +1092,47 @@ public:
     return value.getZExtValue();
   }
 
+  /// getSExtValue - Returns the constant value signal extended to the
+  /// return type of this method
+  ///\param bits - optional parameter that can be used to check that the
+  /// number of bits used by this constant is <= to the parameter
+  /// value. This is useful for checking that type casts won't truncate
+  /// useful bits.
+  ///
+  /// Example: int8_t byte= (int8_t) constant->getZExtValue(8);
+  int64_t getSExtValue(unsigned bits = 64) const {
+	  assert(getWidth() <= bits && "Value may be out of range!");
+	  return value.getSExtValue();
+  }
+
   /// getLimitedValue - If this value is smaller than the specified limit,
   /// return it, otherwise return the limit value.
   uint64_t getLimitedValue(uint64_t Limit = ~0ULL) const {
     return value.getLimitedValue(Limit);
   }
 
+  double getDouble() const {
+	  return value.bitsToDouble();
+  }
+
+  float getFloat()const {
+	  return value.bitsToFloat();
+  }
+
+  bool isFloat() const {
+	  return isFloatType;
+  }
+
+  bool isDouble() const {
+	  return isDoubleType;
+  }
+
   /// toString - Return the constant value as a string
   /// \param Res specifies the string for the result to be placed in
   /// \param radix specifies the base (e.g. 2,10,16). The default is base 10
   void toString(std::string &Res, unsigned radix = 10) const;
+
+  void toStringSigned(std::string &Res, unsigned radix = 10) const;
 
   int compareContents(const Expr &b) const {
     const ConstantExpr &cb = static_cast<const ConstantExpr &>(b);
@@ -1071,8 +1159,22 @@ public:
     return r;
   }
 
+  static ref<ConstantExpr> alloc(const llvm::APInt &v, bool isFloat, bool isDouble) {
+    ref<ConstantExpr> r(new ConstantExpr(v, isFloat, isDouble));
+    r->computeHash();
+    return r;
+  }
+
   static ref<ConstantExpr> alloc(const llvm::APFloat &f) {
-    return alloc(f.bitcastToAPInt());
+    if (&f.getSemantics() ==
+        (const llvm::fltSemantics *)&llvm::APFloat::IEEEdouble) {
+      return alloc(f.bitcastToAPInt(), false, true);
+    }
+    if (&f.getSemantics() ==
+        (const llvm::fltSemantics *)&llvm::APFloat::IEEEsingle) {
+      return alloc(f.bitcastToAPInt(), true, false);
+    }
+    return alloc(f.bitcastToAPInt(), false, false);
   }
 
   static ref<ConstantExpr> alloc(uint64_t v, Width w) {

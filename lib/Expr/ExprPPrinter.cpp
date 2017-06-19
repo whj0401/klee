@@ -37,6 +37,63 @@ namespace {
   PCAllConstWidths("pc-all-const-widths",  llvm::cl::init(false));
 }
 
+/**
+ * Class for intepreting Expr::Kind to a string
+ * FIXME: move to right place in *H file 
+ **/
+class ExprKindView{
+public:
+	  static std::string getSymbol(Expr::Kind kind){
+		  std::map<Expr::Kind,std::string>::const_iterator finder = m_kindMap.find(kind);
+		  if (finder != m_kindMap.end()){
+			  return finder->second;
+		  }
+		  else {
+			  return "Kind Error";
+		  }
+	  }
+
+private:
+	  static std::map<Expr::Kind,std::string> createKindMap(){
+		  std::map<Expr::Kind,std::string> kindMap;
+
+		  // Arithmetic
+		  kindMap[Expr::Add] = "+";
+		  kindMap[Expr::Sub] = "-";
+		  kindMap[Expr::Mul] = "*";
+		  kindMap[Expr::UDiv] = "/";
+		  kindMap[Expr::SDiv] = "/";
+		  kindMap[Expr::URem] = "%";
+		  kindMap[Expr::SRem] = "%";
+
+		  // Bit
+		  kindMap[Expr::Not] = "!";
+		  kindMap[Expr::And] = "&";
+		  kindMap[Expr::Or] = "|";
+		  kindMap[Expr::Xor] = "^";
+		  kindMap[Expr::Shl] = "<<";
+		  kindMap[Expr::LShr] = ">>";
+		  kindMap[Expr::AShr] = ">>";
+
+
+		  // Compare
+		  kindMap[Expr::Eq] = "==";
+		  kindMap[Expr::Ne] = "!=";
+		  kindMap[Expr::Ult] = "<";
+		  kindMap[Expr::Ule] = "<=";
+		  kindMap[Expr::Ugt] = ">";
+		  kindMap[Expr::Uge] = ">=";
+		  kindMap[Expr::Slt] = "<";
+		  kindMap[Expr::Sle] = "<=";
+		  kindMap[Expr::Sgt] = ">";
+		  kindMap[Expr::Sge] = ">=";
+		  return kindMap;
+	  }
+
+	  static const std::map<Expr::Kind,std::string> m_kindMap;
+};
+const std::map<Expr::Kind,std::string> ExprKindView::m_kindMap = ExprKindView::createKindMap();
+
 class PPrinter : public ExprPPrinter {
 public:
   std::set<const Array*> usedArrays;
@@ -282,6 +339,10 @@ private:
     printUpdateList(re->updates, PC);
   }
 
+  void printSymbolicRead(const ReadExpr *re, PrintContext &PC, unsigned indent) {
+    printUpdateList(re->updates, PC);
+  }
+
   void printExtract(const ExtractExpr *ee, PrintContext &PC, unsigned indent) {
     PC << ee->offset << ' ';
     print(ee->expr, PC);
@@ -294,6 +355,15 @@ private:
     for (unsigned i=1; i<ep->getNumKids(); i++) {
       printSeparator(PC, simple, indent);
       print(ep->getKid(i), PC, printConstWidth);
+    }
+  }
+
+  void printExprs(const Expr *ep, PrintContext &PC, unsigned indent, bool printConstWidth = false) {
+    bool simple = hasSimpleKids(ep);
+    printExpression(ep->getKid(0), PC);
+    for (unsigned i = 1; i < ep->getNumKids(); i++) {
+      printSeparator(PC, simple, indent);
+      printExpression(ep->getKid(i), PC, printConstWidth);
     }
   }
 
@@ -358,6 +428,39 @@ public:
     }    
   }
 
+  void printSignedConst(const ref<ConstantExpr> &e, PrintContext &PC,
+                        bool printWidth) {
+    if (e->getWidth() == Expr::Bool)
+      PC << (e->isTrue() ? "true" : "false");
+    else {
+      if (PCAllConstWidths)
+        printWidth = true;
+      if (printWidth)
+        PC << "(w" << e->getWidth() << " ";
+      if (e->getWidth() <= 32) {
+        if (e->isFloat()) {
+          PC << e->getFloat();
+        } else {
+          PC << e->getSExtValue();
+        }
+      } else if (e->getWidth() <= 64) {
+        // FixMe cannot distinguish double from float in APFloat, here should
+        // use isDouble
+        if (e->isFloat()) {
+          PC << e->getDouble();
+        } else {
+          PC << e->getSExtValue();
+        }
+      } else {
+        std::string S;
+        e->toStringSigned(S);
+        PC << S;
+      }
+      if (printWidth)
+        PC << ")";
+    }
+  }
+
   void print(const ref<Expr> &e, PrintContext &PC, bool printConstWidth=false) {
     if (ConstantExpr *CE = dyn_cast<ConstantExpr>(e))
       printConst(CE, PC, printConstWidth);
@@ -409,6 +512,72 @@ public:
 	else
           printExpr(e.get(), PC, indent);	
         PC << ")";
+      }
+    }
+  }
+
+  void printExpression(const ref<Expr> &e, PrintContext &PC,
+                       bool printConstWidth = false) {
+    if (ConstantExpr *ce = dyn_cast<ConstantExpr>(e))
+      printSignedConst(ce, PC, printConstWidth);
+    else {
+      if (PCMultibyteReads && e->getKind() == Expr::Concat) {
+        const ReadExpr *base = hasOrderedReads(e, -1);
+        int isLSB = (base != NULL);
+        if (!isLSB)
+          base = hasOrderedReads(e, 1);
+        if (base) {
+          printSymbolicRead(base, PC, PC.pos);
+          return;
+        }
+      }
+
+      unsigned indent = PC.pos;
+      if (const ReadExpr *re = dyn_cast<ReadExpr>(e)) {
+        printSymbolicRead(re, PC, indent);
+      } else if (const ExtractExpr *ee = dyn_cast<ExtractExpr>(e)) {
+        printExpression(ee->expr, PC);
+      } else if (const BinaryExpr *be = dyn_cast<BinaryExpr>(e)) {
+        if (be->getKind() == Expr::Eq) {
+          const ConstantExpr *ce = dyn_cast<ConstantExpr>(be->getKid(0).get());
+          if (ce && ce->isFalse()) {
+            PC << "! ";
+            printExpression(be->getKid(1), PC);
+          } else {
+            PC << "(";
+            printExpression(be->getKid(1), PC);
+            //						PC << " " << ExprKindView::getSymbol(be->getKind()) <<
+            //" ";
+            PC << ExprKindView::getSymbol(be->getKind());
+            printExpression(be->getKid(0), PC);
+            PC << ")";
+          }
+        } else {
+          PC << "(";
+          printExpression(be->getKid(0), PC);
+          //					PC << " " <<
+          //ExprKindView::getSymbol(be->getKind()) << " ";
+          PC << ExprKindView::getSymbol(be->getKind());
+          printExpression(be->getKid(1), PC);
+          PC << ")";
+        }
+      } else if (e->getKind() == Expr::Concat) {
+        const ConcatExpr *ce = dyn_cast<ConcatExpr>(e);
+        printExpression(ce->getKid(1), PC, true);
+      } else if (e->getKind() == Expr::SExt) {
+        printExprs(e.get(), PC, indent, true);
+      } else if (e->getKind() == Expr::Method) {
+        const MethodExpr *me = dyn_cast<MethodExpr>(e);
+        PC << me->name << "(";
+        for (unsigned i = 0; i < me->getNumKids(); ++i) {
+          printExpression(me->args[i], PC);
+          if (i != me->getNumKids() - 1) {
+            PC << ", ";
+          }
+        }
+        PC << ")";
+      } else {
+        printExprs(e.get(), PC, indent);
       }
     }
   }
@@ -559,4 +728,35 @@ void ExprPPrinter::printQuery(llvm::raw_ostream &os,
 
   PC << ')';
   PC.breakLine();
+}
+
+void ExprPPrinter::printSymbolicConstraints(
+    llvm::raw_ostream &os, const ConstraintManager &constraints) {
+  printCons(os, constraints, ConstantExpr::alloc(false, Expr::Bool));
+}
+
+int caseCount = 0;
+void ExprPPrinter::printCons(llvm::raw_ostream &os,
+                             const ConstraintManager &constraints,
+                             const ref<Expr> &q) {
+  PPrinter p(os);
+  PrintContext PC(os);
+  PC << "constraint " << ++caseCount << ": [";
+  unsigned indent = PC.pos;
+  for (ConstraintManager::const_iterator it = constraints.begin(),
+                                         ie = constraints.end();
+       it != ie;) {
+    p.printExpression(*it, PC);
+    ++it;
+    if (it != ie)
+      PC.breakLine(indent);
+  }
+  PC << ']';
+  PC.breakLine();
+}
+
+void ExprPPrinter::printExpr(llvm::raw_ostream &os, const ref<Expr> &e) {
+  PPrinter p(os);
+  PrintContext PC(os);
+  p.printExpression(e, PC);
 }

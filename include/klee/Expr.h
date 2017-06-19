@@ -492,6 +492,12 @@ public:
 private:
   MethodExpr(const char *_name, std::vector<ref<Expr> > &_args) : name(_name), args(_args) {}
 
+protected:
+  virtual int compareContents(const Expr &b) const {
+    // No attributes to compare.
+    return 0;
+  }
+
 public:
   static bool classof(const Expr *E) {
     return E->getKind() == Expr::Method;

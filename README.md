@@ -25,3 +25,8 @@ arguments.
 Coverage information can be found [here](http://vm-klee.doc.ic.ac.uk:55555/index.html).
 
 For further information, see the [webpage](http://klee.github.io/).
+
+using frontend z3
+using llvm-3.4.2
+./configure --prefix=/my/klee/install/path --with-z3=/frontend/z3/path --with-llvm=/llvm/path
+make && make install

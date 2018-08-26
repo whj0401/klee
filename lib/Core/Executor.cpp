@@ -105,6 +105,7 @@
 #include <sstream>
 #include <vector>
 #include <string>
+#include <set>
 
 #include <sys/mman.h>
 
@@ -3076,13 +3077,22 @@ static std::set<std::string> okExternals(okExternalsList,
                                          (sizeof(okExternalsList)/sizeof(okExternalsList[0])));
 
 // long name should be in front of short one, like asin and sin
+
 const char *methods[] = { "asinh", "acosh", "atanh", "acoth", "asech",
 		"acosech", "atan", "asin", "acos", "sinh", "cosh", "coth", "tanh",
 		"sech", "cosech", "sin", "cos", "tan", "cot", "sec", "cosec", "cotan",
 		"log", "exp", "bound", "pi", "euler", "maximum", "minimum", "fabs", "abs",
-		"setRwidth", "sqrt", "pow", "limit", "lipschitz", "approx" };
+		"setRwidth", "sqrt", "pow", "power", "limit", "lipschitz", "approx", "gamma", "fac" };
 
-std::vector<const char*> methodNames(methods,methods+37);
+std::vector<const char*> methodNames(methods,methods+40);
+/*
+const std::string methods[] = { "asinh", "acosh", "atanh", "acoth", "asech",
+		"acosech", "atan", "asin", "acos", "sinh", "cosh", "coth", "tanh",
+		"sech", "cosech", "sin", "cos", "tan", "cot", "sec", "cosec", "cotan",
+		"log", "exp", "bound", "pi", "euler", "maximum", "minimum", "fabs", "abs",
+		"setRwidth", "sqrt", "pow", "limit", "lipschitz", "approx", "gamma" };
+std::set<std::string> methodNames(methods, methods+sizeof(methods));
+*/
 
 void Executor::callExternalFunction(ExecutionState &state,
                                     KInstruction *target,
@@ -3091,6 +3101,7 @@ void Executor::callExternalFunction(ExecutionState &state,
 
   // check if mathFunctionHandler wants it
   const char *name = function->getName().data();
+
   bool isNeeded = false;
   std::vector<const char *>::iterator it;
   for (it = methodNames.begin(); it != methodNames.end(); it++) {
@@ -3102,6 +3113,11 @@ void Executor::callExternalFunction(ExecutionState &state,
       break;
     }
   }
+
+/*
+  std::set<std::string> methodNames(methods, methods+38);
+  bool isNeeded = (methodNames.find(std::string(name)) != methodNames.end());
+*/
   if (isNeeded) {
     //	  ref<Expr> src = eval(target, 0, state).value;
     //	  LLVMExprOstream::printExpr(src);
